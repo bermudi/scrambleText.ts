@@ -1,15 +1,3 @@
-// Types and interfaces
-type IterationMode = 'once' | 'loop' | 'reverse' | 'alternate';
-
-interface AnimationState {
-    direction: 1 | -1;
-    iterationCount: number;
-    frame: number | null;
-    startTime: number | null;
-    delayStartTime: number | null;
-    isInDelayPhase: boolean;
-}
-
 export interface ScrambleTextConfig {
     text: string;
     chars?: string;
@@ -18,186 +6,120 @@ export interface ScrambleTextConfig {
     delay?: number;
     inView?: boolean;
     rightToLeft?: boolean;
-    ease?: (t: number) => number;
-    preserveOriginal?: boolean;
-    iteration?: IterationMode;
-    customRandom?: (index: number, originalChar: string) => string;
 }
 
 const defaultChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
-// Easing functions
-const easings = {
-    linear: (t: number) => t,
-    easeOutCubic: (t: number) => 1 - Math.pow(1 - t, 3),
-    easeInOutCubic: (t: number) => 
-        t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
-};
 
 export const scrambleText = (
     element: HTMLElement,
     config: ScrambleTextConfig
 ): () => void => {
-    const {
-        text: finalText,
-        duration = 2000,
-        speed = 50,
-        delay = 0,
-        chars = defaultChars,
-        inView = true,
-        rightToLeft = false,
-        ease = easings.easeOutCubic,
-        preserveOriginal = true,
-        iteration = 'once',
-        customRandom
-    } = config;
+    const finalText = config.text;
+    const duration = config.duration ?? 2000;
+    const speed = config.speed ?? 50;
+    const delay = config.delay ?? 0;
+    const chars = config.chars ?? defaultChars;
+    const inView = config.inView ?? true;
+    const rightToLeft = config.rightToLeft ?? false;
 
-    const state: AnimationState = {
-        direction: 1,
-        iterationCount: 0,
-        frame: null,
-        startTime: null,
-        delayStartTime: null,
-        isInDelayPhase: true
-    };
+    let frame: number;
+    let startTime: number | null = null;
+    let isInDelayPhase = true;
+    let delayStartTime: number | null = null;
 
-    // Pre-compute text properties
-    const textLength = finalText.length;
-    const charSet = new Set(chars);
+    const getRandomChar = () => chars[Math.floor(Math.random() * chars.length)];
 
-    const getRandomChar = (index: number, originalChar: string): string => {
-        if (customRandom) {
-            return customRandom(index, originalChar);
+    const getScrambledText = () => {
+        let result = '';
+        for (let i = 0; i < finalText.length; i++) {
+            result += getRandomChar();
         }
-        return chars[Math.floor(Math.random() * chars.length)];
+        return result;
     };
 
-    const getScrambledText = (): string => {
-        const scrambled = new Array(textLength);
-        for (let i = 0; i < textLength; i++) {
-            const originalChar = finalText[i];
-            if (preserveOriginal && !charSet.has(originalChar)) {
-                scrambled[i] = originalChar;
-            } else {
-                scrambled[i] = getRandomChar(i, originalChar);
+    const updateText = (progress: number) => {
+        const targetLength = finalText.length;
+        const currentLength = Math.ceil(targetLength * progress);
+
+        let result = '';
+        if (rightToLeft) {
+            // For right-to-left, reveal from the end
+            for (let i = 0; i < targetLength; i++) {
+                if (i >= targetLength - currentLength) {
+                    result += finalText[i];
+                } else {
+                    result += getRandomChar();
+                }
             }
-        }
-        return scrambled.join('');
-    };
-
-    const updateText = (progress: number): void => {
-        const currentLength = Math.ceil(textLength * progress);
-        const scrambled = new Array(textLength);
-
-        for (let i = 0; i < textLength; i++) {
-            const originalChar = finalText[i];
-            if (preserveOriginal && !charSet.has(originalChar)) {
-                scrambled[i] = originalChar;
-            } else if (rightToLeft ? i >= textLength - currentLength : i < currentLength) {
-                scrambled[i] = finalText[i];
-            } else {
-                scrambled[i] = getRandomChar(i, originalChar);
+        } else {
+            // For left-to-right, reveal from the start
+            for (let i = 0; i < targetLength; i++) {
+                if (i < currentLength) {
+                    result += finalText[i];
+                } else {
+                    result += getRandomChar();
+                }
             }
         }
 
-        element.textContent = scrambled.join('');
+        element.textContent = result;
     };
 
-    const handleIteration = (timestamp: number): void => {
-        switch (iteration) {
-            case 'loop':
-                state.startTime = timestamp;
-                state.frame = requestAnimationFrame(animate);
-                break;
-            case 'reverse':
-            case 'alternate':
-                state.direction *= -1;
-                state.startTime = timestamp;
-                state.frame = requestAnimationFrame(animate);
-                break;
-            default:
-                element.textContent = finalText;
-        }
-    };
-
-    const animate = (timestamp: number): void => {
+    const animate = (timestamp: number) => {
         if (!inView) {
-            element.textContent = finalText;
+            element.textContent = '';
             return;
         }
 
-        if (!state.delayStartTime) {
-            state.delayStartTime = timestamp;
+        if (!delayStartTime) {
+            delayStartTime = timestamp;
             element.textContent = getScrambledText();
         }
 
-        if (state.isInDelayPhase) {
-            const delayElapsed = timestamp - state.delayStartTime;
+        if (isInDelayPhase) {
+            const delayElapsed = timestamp - delayStartTime;
             if (delayElapsed < delay) {
+                // During delay, keep showing scrambled text
                 element.textContent = getScrambledText();
-                state.frame = requestAnimationFrame(animate);
+                frame = requestAnimationFrame(animate);
                 return;
             }
-            state.isInDelayPhase = false;
-            state.startTime = timestamp;
+            isInDelayPhase = false;
+            startTime = timestamp;
         }
 
-        const elapsed = timestamp - state.startTime;
-        const rawProgress = Math.min(elapsed / duration, 1);
-        const progress = state.direction === 1 ? rawProgress : 1 - rawProgress;
-        const easedProgress = ease(progress);
+        const elapsed = timestamp - startTime;
+        const progress = Math.min(elapsed / duration, 1);
 
-        if ((state.direction === 1 && rawProgress >= 1) || 
-            (state.direction === -1 && rawProgress <= 0)) {
-            handleIteration(timestamp);
+        if (progress < 1) {
+            updateText(progress);
+            frame = requestAnimationFrame(animate);
         } else {
-            updateText(easedProgress);
-            state.frame = requestAnimationFrame(animate);
+            element.textContent = finalText;
         }
     };
 
     if (inView) {
-        state.frame = requestAnimationFrame(animate);
+        frame = requestAnimationFrame(animate);
     }
 
+    // Return cleanup function
     return () => {
-        if (state.frame) {
-            cancelAnimationFrame(state.frame);
+        if (frame) {
+            cancelAnimationFrame(frame);
         }
     };
 };
 
-// React hook with Intersection Observer
-import { useEffect, useRef, useState } from 'react';
+// React hook for scrambleText
+import { useEffect, useRef } from 'react';
 
 export const useScrambleText = <T extends HTMLElement>(
     text: string,
-    config?: Omit<ScrambleTextConfig, 'text' | 'inView'>
+    config?: Omit<ScrambleTextConfig, 'text'>
 ) => {
     const elementRef = useRef<T | null>(null);
     const cleanupRef = useRef<(() => void) | null>(null);
-    const [isInView, setIsInView] = useState(false);
-    const [hasAnimated, setHasAnimated] = useState(false);
-
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                entries.forEach(entry => {
-                    if (entry.isIntersecting && !hasAnimated) {
-                        setIsInView(true);
-                        setHasAnimated(true);
-                    }
-                });
-            },
-            { threshold: 0.1 }
-        );
-
-        if (elementRef.current) {
-            observer.observe(elementRef.current);
-        }
-
-        return () => observer.disconnect();
-    }, [hasAnimated]);
 
     useEffect(() => {
         if (elementRef.current) {
@@ -206,17 +128,15 @@ export const useScrambleText = <T extends HTMLElement>(
             }
             cleanupRef.current = scrambleText(elementRef.current, {
                 text,
-                ...config,
-                inView: isInView
+                ...config
             });
         }
-
         return () => {
             if (cleanupRef.current) {
                 cleanupRef.current();
             }
         };
-    }, [text, config, isInView]);
+    }, [text, config]);
 
     return elementRef;
-};
+}; 
