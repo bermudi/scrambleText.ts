@@ -1,22 +1,26 @@
+import { useEffect, useRef } from "react";
+
 export interface ScrambleTextConfig {
     text: string;
     chars?: string;
-    duration?: number;
-    speed?: number;
-    delay?: number;
+    duration?: number; // Total reveal duration (ms)
+    speed?: number; // How often (ms) to update unrevealed letters
+    delay?: number; // Delay before starting the reveal (ms)
     inView?: boolean;
     rightToLeft?: boolean;
+    onComplete?: () => void; // Add completion callback
 }
 
-const defaultChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const defaultChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 export const scrambleText = (
     element: HTMLElement,
     config: ScrambleTextConfig
 ): () => void => {
+    // Extract configuration with defaults
     const finalText = config.text;
-    const duration = config.duration ?? 2000;
-    const speed = config.speed ?? 50;
+    const totalDuration = config.duration ?? 2000;
+    const updateSpeed = config.speed ?? 50;
     const delay = config.delay ?? 0;
     const chars = config.chars ?? defaultChars;
     const inView = config.inView ?? true;
@@ -24,86 +28,110 @@ export const scrambleText = (
 
     let frame: number;
     let startTime: number | null = null;
-    let isInDelayPhase = true;
     let delayStartTime: number | null = null;
+    let lastRandomUpdateTime: number = 0;
+    let revealed = 0;
 
-    const getRandomChar = () => chars[Math.floor(Math.random() * chars.length)];
+    // Initialize a cache of random letters for each non‑whitespace character.
+    let cachedRandomChars = finalText.split("").map((c) =>
+        c === " " || c === "\n" ? c : getRandomChar()
+    );
 
-    const getScrambledText = () => {
-        let result = '';
-        for (let i = 0; i < finalText.length; i++) {
-            result += getRandomChar();
-        }
-        return result;
-    };
+    function getRandomChar() {
+        return chars[Math.floor(Math.random() * chars.length)];
+    }
 
-    const updateText = (progress: number) => {
-        const targetLength = finalText.length;
-        const currentLength = Math.ceil(targetLength * progress);
+    function matchCase(source: string, target: string) {
+        return source === source.toUpperCase() ? target.toUpperCase() : target.toLowerCase();
+    }
 
-        let result = '';
-        if (rightToLeft) {
-            // For right-to-left, reveal from the end
-            for (let i = 0; i < targetLength; i++) {
-                if (i >= targetLength - currentLength) {
-                    result += finalText[i];
-                } else {
-                    result += getRandomChar();
-                }
+    // updateText will build the output string by checking each character’s "reveal" threshold.
+    const updateText = (elapsed: number) => {
+        let result = "";
+        const totalChars = finalText.length;
+
+        for (let i = 0; i < totalChars; i++) {
+            // Determine the order for reveal based on animation direction.
+            // For left-to-right, indexForReveal is just i.
+            // For right-to-left, we reveal starting from the end.
+            const indexForReveal = rightToLeft ? totalChars - 1 - i : i;
+            // Each character gets its own reveal time proportional to its index.
+            const revealTime = (indexForReveal / totalChars) * totalDuration;
+
+            // If elapsed time is past the reveal threshold, show the final character;
+            // otherwise show the cached random character (or preserve whitespace)
+            if (elapsed >= revealTime) {
+                result += finalText[i];
+            } else {
+                result +=
+                    finalText[i] === " " || finalText[i] === "\n"
+                        ? finalText[i]
+                        : matchCase(finalText[i], cachedRandomChars[i]);
             }
-        } else {
-            // For left-to-right, reveal from the start
-            for (let i = 0; i < targetLength; i++) {
-                if (i < currentLength) {
-                    result += finalText[i];
-                } else {
-                    result += getRandomChar();
-                }
-            }
         }
-
         element.textContent = result;
     };
 
+    // The animate function uses requestAnimationFrame to update the text.
     const animate = (timestamp: number) => {
         if (!inView) {
-            element.textContent = '';
+            element.textContent = finalText;
             return;
         }
 
+        // Set up delay phase
         if (!delayStartTime) {
             delayStartTime = timestamp;
-            element.textContent = getScrambledText();
+            // (Re)initialize the random cache so the scramble always starts fresh.
+            cachedRandomChars = finalText.split("").map((c) =>
+                c === " " || c === "\n" ? c : getRandomChar()
+            );
+            element.textContent = cachedRandomChars.join("");
+            lastRandomUpdateTime = timestamp;
         }
-
-        if (isInDelayPhase) {
-            const delayElapsed = timestamp - delayStartTime;
-            if (delayElapsed < delay) {
-                // During delay, keep showing scrambled text
-                element.textContent = getScrambledText();
-                frame = requestAnimationFrame(animate);
-                return;
-            }
-            isInDelayPhase = false;
+        if (timestamp - delayStartTime < delay) {
+            element.textContent = cachedRandomChars.join("");
+            frame = requestAnimationFrame(animate);
+            return;
+        }
+        if (startTime === null) {
             startTime = timestamp;
         }
-
         const elapsed = timestamp - startTime;
-        const progress = Math.min(elapsed / duration, 1);
 
-        if (progress < 1) {
-            updateText(progress);
+        // Only update the cache every updateSpeed ms, so that letters don’t change every frame.
+        if (timestamp - lastRandomUpdateTime >= updateSpeed) {
+            for (let i = 0; i < finalText.length; i++) {
+                const indexForReveal = rightToLeft ? finalText.length - 1 - i : i;
+                const revealTime = (indexForReveal / finalText.length) * totalDuration;
+                if (elapsed < revealTime && finalText[i] !== " " && finalText[i] !== "\n") {
+                    cachedRandomChars[i] = getRandomChar();
+                }
+            }
+            lastRandomUpdateTime = timestamp;
+        }
+
+        updateText(elapsed);
+
+        if (elapsed < totalDuration) {
             frame = requestAnimationFrame(animate);
         } else {
             element.textContent = finalText;
+            config.onComplete?.();
         }
     };
+
+    // Add pre-initialization scramble
+    element.textContent = finalText
+        .split('')
+        .map(() => chars[Math.floor(Math.random() * chars.length)])
+        .join('');
 
     if (inView) {
         frame = requestAnimationFrame(animate);
     }
 
-    // Return cleanup function
+    // Return a cleanup function
     return () => {
         if (frame) {
             cancelAnimationFrame(frame);
@@ -111,12 +139,10 @@ export const scrambleText = (
     };
 };
 
-// React hook for scrambleText
-import { useEffect, useRef } from 'react';
-
+// React hook for using scrambleText
 export const useScrambleText = <T extends HTMLElement>(
     text: string,
-    config?: Omit<ScrambleTextConfig, 'text'>
+    config?: Omit<ScrambleTextConfig, "text">
 ) => {
     const elementRef = useRef<T | null>(null);
     const cleanupRef = useRef<(() => void) | null>(null);
@@ -128,7 +154,7 @@ export const useScrambleText = <T extends HTMLElement>(
             }
             cleanupRef.current = scrambleText(elementRef.current, {
                 text,
-                ...config
+                ...config,
             });
         }
         return () => {
@@ -139,4 +165,4 @@ export const useScrambleText = <T extends HTMLElement>(
     }, [text, config]);
 
     return elementRef;
-}; 
+};
